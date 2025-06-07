@@ -71,12 +71,6 @@ export function generateVideoSummary(data: VideoSummaryData): string {
     markdown += `### 段落 ${index + 1}\n\n`
     markdown += `**时间**: [${timeRange}](${youtubeTimeLink})\n\n`
 
-    // 如果有截图，显示截图
-    if (segment.screenshotPath) {
-      const screenshotFileName = segment.screenshotPath.split('/').pop() || 'screenshot.jpg'
-      markdown += `![时间段截图](./screenshots/${screenshotFileName})\n\n`
-    }
-
     // 详细总结内容
     markdown += `**详细总结**:\n\n${segment.detailedSummary}\n\n`
 

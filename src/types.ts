@@ -9,8 +9,6 @@ export interface ProcessedSegment {
   endTime: number
   originalText: string
   detailedSummary: string  // 详细分段总结
-  screenshotUrl?: string
-  screenshotPath?: string
 }
 
 export interface OverallSummary {
@@ -38,7 +36,6 @@ export interface YouTubeSummarizerSharedStore {
   
   // 输出配置
   outputDir?: string
-  screenshotsDir?: string
   markdownPath?: string
   segmentMinutesMin: number // 最小分段时长（分钟）
   segmentMinutesMax: number // 最大分段时长（分钟）

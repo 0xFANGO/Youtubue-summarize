@@ -1,8 +1,8 @@
 import { Node, BatchNode } from 'pocketflow'
 import { callLlm } from './utils/callLlm'
 import { getSubtitles } from './utils/getSubtitles'
-import { getScreenshot, formatTimestamp } from './utils/getScreenshot'
-import { createOutputStructure, downloadImage } from './utils/fileSystem'
+import { formatTimestamp } from './utils/getScreenshot'
+import { createOutputStructure } from './utils/fileSystem'
 import { generateVideoSummary } from './utils/markdownGenerator'
 import { writeMarkdown } from './utils/fileSystem'
 import { smartSegmentation, validateSegments, SegmentGroup } from './utils/segmentation'
@@ -47,13 +47,13 @@ export class FetchSubtitlesNode extends Node<YouTubeSummarizerSharedStore> {
     shared.subtitles = execRes.subtitles
     shared.totalDuration = execRes.duration
 
-    // 创建输出目录结构
+    // 创建输出目录结构，使用视频标题作为主题命名
     const outputStructure = await createOutputStructure(
       shared.outputDir || './output',
-      execRes.title
+      execRes.title,
+      execRes.videoId
     )
     shared.outputDir = outputStructure.outputDir
-    shared.screenshotsDir = outputStructure.screenshotsDir
     shared.markdownPath = outputStructure.markdownPath
 
     console.log(`输出目录已创建: ${shared.outputDir}`)
@@ -175,46 +175,8 @@ ${segment.text}
     segments: SegmentGroup[],
     processedSegments: ProcessedSegment[]
   ): Promise<string | undefined> {
-    // 为每个段落获取截图
-    console.log('正在获取截图...')
-    const segmentsWithScreenshots: ProcessedSegment[] = []
-    
-    for (let i = 0; i < processedSegments.length; i++) {
-      const segment = processedSegments[i]
-      try {
-        // 获取截图URL（使用段落中间时间点）
-        const middleTime = (segment.startTime + segment.endTime) / 2
-        const screenshotUrl = await getScreenshot({
-          videoId: shared.videoId!,
-          timestamp: middleTime
-        })
-
-        // 下载截图
-        const screenshotFileName = `screenshot_${Math.floor(segment.startTime)}.jpg`
-        const screenshotPath = path.join(shared.screenshotsDir!, screenshotFileName)
-        
-        await downloadImage(screenshotUrl, screenshotPath)
-        console.log(`截图已保存: ${screenshotFileName} (${i+1}/${processedSegments.length})`)
-
-        segmentsWithScreenshots.push({
-          ...segment,
-          screenshotUrl,
-          screenshotPath: path.relative(shared.outputDir!, screenshotPath)
-        })
-        
-        // 添加截图下载间的小延迟
-        if (i < processedSegments.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500))
-        }
-      } catch (error) {
-        console.warn(`获取截图失败 (时间 ${segment.startTime}s):`, error)
-        // 即使截图失败也保留段落
-        segmentsWithScreenshots.push(segment)
-      }
-    }
-
-    shared.segments = segmentsWithScreenshots
-    console.log(`${segmentsWithScreenshots.length} 个段落处理完成，开始生成整体总结`)
+    shared.segments = processedSegments
+    console.log(`${processedSegments.length} 个段落处理完成，开始生成整体总结`)
     return 'default'
   }
 }
@@ -385,7 +347,6 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
     console.log('✅ YouTube视频总结完成！')
     console.log(`📁 输出目录: ${shared.outputDir}`)
     console.log(`📄 总结文件: ${shared.markdownPath}`)
-    console.log(`🖼️  截图目录: ${shared.screenshotsDir}`)
     console.log(`📊 分段数量: ${shared.segments?.length || 0}`)
     console.log(`⏱️  视频时长: ${Math.floor((shared.totalDuration || 0)/60)}分${Math.floor((shared.totalDuration || 0)%60)}秒`)
 
