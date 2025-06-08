@@ -5,6 +5,7 @@ import { formatTimestamp } from './utils/getScreenshot'
 import { createOutputStructure } from './utils/fileSystem'
 import { generateVideoSummary } from './utils/markdownGenerator'
 import { writeMarkdown } from './utils/fileSystem'
+import { exportToObsidian, ObsidianConfig } from './utils/obsidianExporter'
 import { smartSegmentation, validateSegments, SegmentGroup } from './utils/segmentation'
 import { RateLimiter, callLlmWithRetry, RATE_LIMIT_CONFIGS } from './utils/rateLimiter'
 import { YouTubeSummarizerSharedStore, ProcessedSegment, QASharedStore, OverallSummary } from './types'
@@ -25,10 +26,25 @@ export class FetchSubtitlesNode extends Node<YouTubeSummarizerSharedStore> {
     const videoInfo = await getSubtitles(youtubeUrl)
     console.log(`成功获取字幕，视频标题: ${videoInfo.title}`)
     
-    // 计算总时长
-    const totalDuration = videoInfo.subtitles.length > 0 
-      ? videoInfo.subtitles[videoInfo.subtitles.length - 1].end
-      : 0
+    // 🚀 修复：优先使用真实视频时长，而不是字幕计算的时长
+    let totalDuration: number
+    if (videoInfo.actualDuration) {
+      // 使用从YouTube API获取的真实时长
+      totalDuration = videoInfo.actualDuration
+      console.log(`✅ 使用真实视频时长: ${totalDuration}秒`)
+    } else {
+      // 后备方案：使用字幕计算的时长
+      totalDuration = videoInfo.subtitles.length > 0 
+        ? videoInfo.subtitles[videoInfo.subtitles.length - 1].end
+        : 0
+      console.log(`⚠️ 使用字幕估算时长: ${totalDuration}秒 (可能不准确)`)
+      
+      // 如果字幕时长异常大，进行修正
+      if (totalDuration > 7200) { // 超过2小时很可能有问题
+        console.warn(`⚠️ 字幕估算时长异常: ${totalDuration}秒，重置为合理值`)
+        totalDuration = Math.min(totalDuration, 3600) // 限制在1小时以内
+      }
+    }
     
     return {
       ...videoInfo,
@@ -80,16 +96,16 @@ export class ProcessSegmentsControlledParallelNode extends Node<YouTubeSummarize
 
   async prep(shared: YouTubeSummarizerSharedStore): Promise<SegmentGroup[]> {
     const subtitles = shared.subtitles || []
-    const minSegmentMinutes = shared.segmentMinutesMin || 2  // 最小2分钟
-    const maxSegmentMinutes = shared.segmentMinutesMax || 8  // 最大8分钟
+    const minSegmentMinutes = shared.segmentMinutesMin || 4  // 增加最小时长到4分钟
+    const maxSegmentMinutes = shared.segmentMinutesMax || 15  // 增加最大时长到15分钟
 
     console.log(`开始智能分段，最小时长: ${minSegmentMinutes}分钟，最大时长: ${maxSegmentMinutes}分钟`)
 
-    // 使用智能分段算法
+    // 使用智能分段算法，增加每段最大词数以减少段落数量
     const segments = smartSegmentation(subtitles, {
       minSegmentMinutes,
       maxSegmentMinutes,
-      maxWordsPerSegment: 1000
+      maxWordsPerSegment: 2000  // 增加到2000词
     })
 
     // 验证分段结果
@@ -119,21 +135,21 @@ export class ProcessSegmentsControlledParallelNode extends Node<YouTubeSummarize
       
       console.log(`正在处理批次 ${batchNumber}/${totalBatches} (${batch.length} 个段落)`)
       
-      // 并行处理当前批次
+      // 并行处理当前批次，使用更便宜的模型
       const batchResults = await Promise.all(
         batch.map(async (segment, batchIndex) => {
           const globalIndex = i + batchIndex + 1
           console.log(`  处理段落 ${globalIndex}/${segments.length}: ${formatTimestamp(segment.start)} - ${formatTimestamp(segment.end)}`)
           
-          // 使用速率限制器调用LLM
+          // 使用速率限制器调用LLM，改用更便宜的gpt-4o-mini模型
           const detailedSummary = await this.rateLimiter.execute(() =>
             callLlmWithRetry(
-              callLlm,
+              (prompt) => callLlm(prompt, 'gpt-4o-mini'), // 使用更便宜的模型
               `请用中文对以下视频片段进行详细总结，要求：
 
 1. 总结要详细而完整，突出这一段的核心内容和要点
 2. 使用清晰易懂的中文表达
-3. 总结长度控制在200-400字之间
+3. 总结长度控制在300-500字之间，比例保持与原文相当
 4. 如果内容是英文，请先理解后用中文总结
 5. 保持客观准确，不要添加个人观点
 6. 如果有具体的数据、名称、时间等，请准确记录
@@ -207,56 +223,8 @@ export class GenerateOverallSummaryNode extends Node<YouTubeSummarizerSharedStor
       return `段落${index + 1} (${timeRange}): ${segment.detailedSummary}`
     }).join('\n\n')
 
-    // 生成主要观点
-    const keyPointsPrompt = `基于以下视频的分段总结，提取3-5个主要观点，要求：
-1. 每个观点简洁明了，1-2句话
-2. 涵盖视频的核心内容
-3. 按重要性排序
-4. 用中文表达
-
-视频标题：${data.videoTitle}
-
-分段总结：
-${allSegmentSummaries}
-
-请只返回观点列表，每行一个观点，以"- "开头：`
-
-    const keyPointsResponse = await callLlm(keyPointsPrompt)
-    const keyPoints = keyPointsResponse
-      .split('\n')
-      .filter(line => line.trim().startsWith('-'))
-      .map(line => line.trim().substring(1).trim())
-
-    // 生成主题
-    const themePrompt = `基于以下视频的分段总结，用一句话概括视频的主要主题：
-
-视频标题：${data.videoTitle}
-
-分段总结：
-${allSegmentSummaries}
-
-请只返回主题描述，不要包含其他内容：`
-
-    const mainTheme = await callLlm(themePrompt)
-
-    // 生成结论
-    const conclusionPrompt = `基于以下视频的分段总结，写一个简洁的结论，总结视频的核心价值和意义：
-
-视频标题：${data.videoTitle}
-
-分段总结：
-${allSegmentSummaries}
-
-请用2-3句话总结，不要包含其他内容：`
-
-    const conclusion = await callLlm(conclusionPrompt)
-
-    // 生成完整总结
-    const fullSummaryPrompt = `基于以下视频的分段总结，写一个完整的视频总结，要求：
-1. 总结要全面而简洁，涵盖视频的主要内容
-2. 长度控制在300-500字
-3. 结构清晰，逻辑连贯
-4. 用中文表达
+    // 🚀 优化：将4次LLM调用合并为1次，使用更便宜的模型
+    const combinedPrompt = `基于以下视频的分段总结，请生成一个完整的视频总结报告，包含以下四个部分：
 
 视频标题：${data.videoTitle}
 视频时长：${Math.floor(data.totalDuration/60)}分${Math.floor(data.totalDuration%60)}秒
@@ -264,15 +232,88 @@ ${allSegmentSummaries}
 分段总结：
 ${allSegmentSummaries}
 
-请直接返回完整总结，不要包含其他格式：`
+请按以下格式返回结果：
 
-    const fullSummary = await callLlm(fullSummaryPrompt)
+【主要主题】
+用一句话概括视频的主要主题
+
+【关键要点】
+- 要点1
+- 要点2
+- 要点3
+- 要点4
+- 要点5
+
+【完整总结】
+写一个300-500字的完整总结，涵盖视频的主要内容，结构清晰，逻辑连贯
+
+【核心结论】
+用2-3句话总结视频的核心价值和意义
+
+请严格按照上述格式返回，不要包含其他说明或格式：`
+
+    // 使用更便宜的gpt-4o-mini模型进行整体总结
+    const response = await callLlm(combinedPrompt, 'gpt-4o-mini')
+
+    // 解析响应结果
+    const lines = response.split('\n').filter(line => line.trim())
+    
+    let mainTheme = '主题生成失败'
+    let keyPoints: string[] = []
+    let fullSummary = '完整总结生成失败'
+    let conclusion = '结论生成失败'
+    
+    let currentSection = ''
+    let summaryLines: string[] = []
+    
+    for (const line of lines) {
+      const trimmed = line.trim()
+      
+      if (trimmed.includes('【主要主题】')) {
+        currentSection = 'theme'
+        continue
+      } else if (trimmed.includes('【关键要点】')) {
+        currentSection = 'points'
+        continue
+      } else if (trimmed.includes('【完整总结】')) {
+        currentSection = 'summary'
+        continue
+      } else if (trimmed.includes('【核心结论】')) {
+        currentSection = 'conclusion'
+        continue
+      }
+      
+      if (currentSection === 'theme' && trimmed) {
+        mainTheme = trimmed
+      } else if (currentSection === 'points' && trimmed.startsWith('-')) {
+        keyPoints.push(trimmed.substring(1).trim())
+      } else if (currentSection === 'summary' && trimmed) {
+        summaryLines.push(trimmed)
+      } else if (currentSection === 'conclusion' && trimmed) {
+        conclusion = trimmed
+      }
+    }
+    
+    // 组合完整总结
+    if (summaryLines.length > 0) {
+      fullSummary = summaryLines.join(' ')
+    }
+    
+    // 确保至少有一些关键要点
+    if (keyPoints.length === 0) {
+      keyPoints = ['无法提取关键要点']
+    }
+
+    console.log('整体总结生成完成')
+    console.log(`主题: ${mainTheme}`)
+    console.log(`主要观点: ${keyPoints.length}个`)
+    console.log(`完整总结: ${fullSummary.length}字符`)
 
     return {
-      keyPoints: keyPoints.length > 0 ? keyPoints : ['总结生成失败'],
-      mainTheme: mainTheme.trim() || '主题生成失败',
-      conclusion: conclusion.trim() || '结论生成失败',
-      fullSummary: fullSummary.trim() || '完整总结生成失败'
+      keyPoints,
+      mainTheme,
+      conclusion,
+      fullSummary
     }
   }
 
@@ -337,16 +378,49 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
 
   async post(
     shared: YouTubeSummarizerSharedStore,
-    _: any,
+    prepRes: any,
     markdownContent: string
   ): Promise<string | undefined> {
     // 写入Markdown文件
     await writeMarkdown(shared.markdownPath!, markdownContent)
     shared.markdownContent = markdownContent
 
+    // 如果配置了Obsidian导出，则导出到Obsidian
+    if (shared.obsidianPath) {
+      try {
+        console.log('📝 正在导出到Obsidian...')
+        
+        const obsidianConfig: ObsidianConfig = {
+          vaultPath: shared.obsidianPath,
+          folderName: shared.obsidianFolder || 'YouTube笔记',
+          templateType: shared.obsidianTemplate || 'standard',
+          tags: ['youtube', 'video-summary']
+        }
+
+        const obsidianPath = await exportToObsidian({
+          videoTitle: prepRes.videoTitle,
+          videoId: prepRes.videoId,
+          youtubeUrl: prepRes.youtubeUrl,
+          segments: prepRes.segments,
+          overallSummary: prepRes.overallSummary,
+          totalDuration: prepRes.totalDuration,
+          generatedAt: new Date()
+        }, obsidianConfig)
+
+        shared.obsidianExportPath = obsidianPath
+        console.log(`✅ 已导出到Obsidian: ${obsidianPath}`)
+      } catch (error) {
+        console.error(`❌ Obsidian导出失败: ${error instanceof Error ? error.message : error}`)
+        console.error('💡 请检查Obsidian仓库路径是否正确')
+      }
+    }
+
     console.log('✅ YouTube视频总结完成！')
     console.log(`📁 输出目录: ${shared.outputDir}`)
     console.log(`📄 总结文件: ${shared.markdownPath}`)
+    if (shared.obsidianExportPath) {
+      console.log(`📝 Obsidian文件: ${shared.obsidianExportPath}`)
+    }
     console.log(`📊 分段数量: ${shared.segments?.length || 0}`)
     console.log(`⏱️  视频时长: ${Math.floor((shared.totalDuration || 0)/60)}分${Math.floor((shared.totalDuration || 0)%60)}秒`)
 

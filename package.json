@@ -1,24 +1,50 @@
 {
-  "name": "youtube-summarizer",
+  "name": "video-summary",
   "version": "0.1.0",
-  "description": "TypeScript template for PocketFlow",
+  "description": "AI-powered YouTube video summarizer with transcript analysis",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "video-summary": "dist/cli.js",
+    "vs": "dist/cli.js"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "INSTALL.md"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "ts-node src/index.ts",
     "cli": "ts-node src/cli.ts",
     "start": "npm run build && node dist/index.js",
     "test": "vitest",
-    "lint": "eslint src --ext .ts,.js,.jsx,.tsx"
+    "lint": "eslint src --ext .ts,.js,.jsx,.tsx",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "pocketflow",
-    "template",
-    "typescript"
+    "youtube",
+    "video",
+    "summarizer",
+    "ai",
+    "transcript",
+    "cli",
+    "openai",
+    "pocketflow"
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/video-summary.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/video-summary/issues"
+  },
+  "homepage": "https://github.com/your-username/video-summary#readme",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "devDependencies": {
     "@eslint/js": "^9.23.0",
     "@stylistic/eslint-plugin": "^4.2.0",

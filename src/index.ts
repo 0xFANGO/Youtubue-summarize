@@ -59,7 +59,7 @@ async function qaExample(): Promise<void> {
   console.log(`Answer: ${shared.answer}`)
 }
 
-// 如果直接运行此文件，执行主函数
-if (require.main === module) {
+// 如果直接运行此文件（且不是CLI），执行主函数
+if (require.main === module && !process.argv[1]?.includes('cli')) {
   main().catch(console.error)
 }

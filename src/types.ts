@@ -18,6 +18,23 @@ export interface OverallSummary {
   fullSummary: string      // 完整总结
 }
 
+// Token使用统计接口
+export interface TokenStats {
+  totalCalls: number
+  totalTokens: number
+  totalCost: number
+  averageTokensPerCall: number
+  callHistory: Array<{
+    timestamp: Date
+    model: string
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+    cost: number
+    promptPreview: string
+  }>
+}
+
 export interface YouTubeSummarizerSharedStore {
   // 用户输入和视频基本信息
   youtubeUrl: string
@@ -40,8 +57,17 @@ export interface YouTubeSummarizerSharedStore {
   segmentMinutesMin: number // 最小分段时长（分钟）
   segmentMinutesMax: number // 最大分段时长（分钟）
   
+  // Obsidian导出配置
+  obsidianPath?: string
+  obsidianTemplate?: 'standard' | 'minimal' | 'timeline'
+  obsidianFolder?: string
+  obsidianExportPath?: string // 实际导出的文件路径
+  
   // 最终结果
   markdownContent?: string
+  
+  // Token使用统计
+  finalTokenStats?: TokenStats
 }
 
 // 为了保持向后兼容，保留原有的QA接口

@@ -74,19 +74,9 @@ export function generateVideoSummary(data: VideoSummaryData): string {
     // 详细总结内容
     markdown += `**详细总结**:\n\n${segment.detailedSummary}\n\n`
 
-    // 原始字幕（折叠）
-    markdown += `<details>\n`
-    markdown += `<summary>📝 原始字幕</summary>\n\n`
-    markdown += `\`\`\`\n${segment.originalText}\`\`\`\n\n`
-    markdown += `</details>\n\n`
-
     markdown += `---\n\n`
   })
 
-  // 脚注
-  markdown += `## 说明\n\n`
-  markdown += `本总结由AI自动生成，仅供参考。如有疑问，请查看原视频内容。\n\n`
-  markdown += `点击时间链接可直接跳转到视频对应位置。\n\n`
 
   return markdown
 }
