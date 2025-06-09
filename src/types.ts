@@ -35,14 +35,49 @@ export interface TokenStats {
   }>
 }
 
+// 平台类型定义
+export type VideoPlatform = 'youtube' | 'bilibili'
+
+// 平台检测结果
+export interface PlatformDetectionResult {
+  platform: VideoPlatform
+  videoId: string
+  originalUrl: string
+}
+
+// 平台特定元数据
+export interface PlatformMetadata {
+  // YouTube特有字段
+  channelName?: string
+  
+  // B站特有字段
+  bvid?: string
+  aid?: string
+  cid?: string
+  uploader?: string
+  tags?: string[]
+}
+
+// 统一的视频数据接口
+export interface VideoData {
+  title: string
+  duration: number
+  subtitles: SubtitleSegment[]
+  metadata: PlatformMetadata
+}
+
 export interface YouTubeSummarizerSharedStore {
-  // 用户输入和视频基本信息
-  youtubeUrl: string
-  videoId?: string
+  // 用户输入和平台信息
+  inputUrl: string                    // 原始输入URL
+  platform?: VideoPlatform            // 检测到的平台
+  videoId?: string                    // 平台特定的视频ID
   videoTitle?: string
   totalDuration?: number
   
-  // 字幕数据
+  // 平台特定元数据
+  platformMetadata?: PlatformMetadata
+  
+  // 字幕数据（标准化格式）
   subtitles?: SubtitleSegment[]
   
   // 处理后的分段数据

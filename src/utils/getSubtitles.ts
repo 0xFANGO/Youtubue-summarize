@@ -126,28 +126,58 @@ export async function getSubtitles(youtubeUrl: string): Promise<VideoInfo> {
     // 🚀 修复：获取真实视频时长
     let actualDuration: number | undefined
     try {
-      // 尝试从视频基本信息中获取时长
-      const duration = (info.basic_info as any)?.duration
-      if (duration) {
-        if (typeof duration === 'number') {
-          actualDuration = duration
-          console.log(`✅ 获取到真实视频时长: ${duration}秒 (${Math.floor(duration/60)}分${duration%60}秒)`)
-        } else if (duration.seconds && typeof duration.seconds === 'number') {
-          actualDuration = duration.seconds
-          console.log(`✅ 获取到真实视频时长: ${duration.seconds}秒 (${Math.floor(duration.seconds/60)}分${duration.seconds%60}秒)`)
-        } else if (duration.text && typeof duration.text === 'string') {
-          // 解析时长文本格式如 "5:23" 或 "1:23:45"
-          const parsedDuration = parseTimeString(duration.text)
-          if (parsedDuration > 0) {
-            actualDuration = parsedDuration
-            console.log(`✅ 解析视频时长文本: ${duration.text} -> ${parsedDuration}秒`)
+      const basicInfo = info.basic_info as any
+      
+      // 方法1: 优先尝试从 end_timestamp 计算视频时长
+      if (basicInfo?.end_timestamp && basicInfo?.start_timestamp) {
+        const endTime = new Date(basicInfo.end_timestamp)
+        const startTime = new Date(basicInfo.start_timestamp)
+        if (!isNaN(endTime.getTime()) && !isNaN(startTime.getTime())) {
+          actualDuration = Math.round((endTime.getTime() - startTime.getTime()) / 1000)
+          console.log(`✅ 通过时间戳计算视频时长: ${actualDuration}秒 (${Math.floor(actualDuration/60)}分${actualDuration%60}秒)`)
+        }
+      }
+      
+      // 方法2: 如果没有start_timestamp，但有end_timestamp和发布时间，尝试估算
+      if (!actualDuration && basicInfo?.end_timestamp) {
+        const endTime = new Date(basicInfo.end_timestamp)
+        if (!isNaN(endTime.getTime()) && basicInfo?.publish_date) {
+          const publishTime = new Date(basicInfo.publish_date)
+          if (!isNaN(publishTime.getTime())) {
+            const diffInSeconds = Math.round((endTime.getTime() - publishTime.getTime()) / 1000)
+            // 只有当差值在合理范围内（小于24小时）才使用
+            if (diffInSeconds > 0 && diffInSeconds < 86400) {
+              actualDuration = diffInSeconds
+              console.log(`✅ 通过end_timestamp和发布时间估算视频时长: ${actualDuration}秒`)
+            }
           }
         }
       }
       
-      // 如果上面都没获取到，尝试其他可能的字段
+      // 方法3: 尝试从视频基本信息中的duration字段获取时长
       if (!actualDuration) {
-        const lengthSeconds = (info.basic_info as any)?.length_seconds
+        const duration = basicInfo?.duration
+        if (duration) {
+          if (typeof duration === 'number') {
+            actualDuration = duration
+            console.log(`✅ 获取到真实视频时长: ${duration}秒 (${Math.floor(duration/60)}分${duration%60}秒)`)
+          } else if (duration.seconds && typeof duration.seconds === 'number') {
+            actualDuration = duration.seconds
+            console.log(`✅ 获取到真实视频时长: ${duration.seconds}秒 (${Math.floor(duration.seconds/60)}分${duration.seconds%60}秒)`)
+          } else if (duration.text && typeof duration.text === 'string') {
+            // 解析时长文本格式如 "5:23" 或 "1:23:45"
+            const parsedDuration = parseTimeString(duration.text)
+            if (parsedDuration > 0) {
+              actualDuration = parsedDuration
+              console.log(`✅ 解析视频时长文本: ${duration.text} -> ${parsedDuration}秒`)
+            }
+          }
+        }
+      }
+      
+      // 方法4: 如果上面都没获取到，尝试其他可能的字段
+      if (!actualDuration) {
+        const lengthSeconds = basicInfo?.length_seconds
         if (lengthSeconds && typeof lengthSeconds === 'number') {
           actualDuration = lengthSeconds
           console.log(`✅ 从length_seconds获取视频时长: ${lengthSeconds}秒`)
@@ -160,8 +190,10 @@ export async function getSubtitles(youtubeUrl: string): Promise<VideoInfo> {
     // 获取字幕数据
     const transcriptData = await info.getTranscript()
     
-    // 调试：打印完整的transcript数据结构
-    console.log('Transcript data structure:', JSON.stringify(transcriptData, null, 2))
+    // 调试：打印完整的transcript数据结构 (仅在详细模式下)
+    if (process.env.DEBUG_SUBTITLES === 'true') {
+      console.log('Transcript data structure:', JSON.stringify(transcriptData, null, 2))
+    }
     
     if (!transcriptData) {
       throw new Error('No transcript available for this video')

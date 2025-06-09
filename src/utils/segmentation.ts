@@ -16,9 +16,39 @@ export function smartSegmentation(
     minSegmentMinutes: number
     maxSegmentMinutes: number
     maxWordsPerSegment?: number
+    videoDuration?: number  // 添加视频总时长参数
   }
 ): SegmentGroup[] {
+  console.log(`🔍 分段函数调用 - 字幕数量: ${subtitles?.length || 0}`)
+  
+  // 🚀 修复：即使没有字幕，也要基于时间创建分段
   if (!subtitles || subtitles.length === 0) {
+    console.log('⚠️ 字幕为空，使用时间基分段策略')
+    
+    // 如果有视频时长信息，创建基于时间的分段
+    if (options.videoDuration && options.videoDuration > 0) {
+      const avgSegmentMinutes = (options.minSegmentMinutes + options.maxSegmentMinutes) / 2
+      const segmentSeconds = avgSegmentMinutes * 60
+      const segments: SegmentGroup[] = []
+      
+      let currentStart = 0
+      while (currentStart < options.videoDuration) {
+        const currentEnd = Math.min(currentStart + segmentSeconds, options.videoDuration)
+        
+        segments.push({
+          start: currentStart,
+          end: currentEnd,
+          text: `视频片段 ${Math.floor(currentStart/60)}:${String(Math.floor(currentStart%60)).padStart(2, '0')} - ${Math.floor(currentEnd/60)}:${String(Math.floor(currentEnd%60)).padStart(2, '0')} (无字幕)`,
+          subtitleCount: 0
+        })
+        
+        currentStart = currentEnd
+      }
+      
+      console.log(`✅ 基于时间创建了 ${segments.length} 个分段`)
+      return segments
+    }
+    
     return []
   }
 
@@ -26,18 +56,54 @@ export function smartSegmentation(
   const maxSegmentSeconds = options.maxSegmentMinutes * 60
   const maxWordsPerSegment = options.maxWordsPerSegment || 800 // 默认最大800词
 
+  console.log(`📋 分段参数 - 最小: ${minSegmentSeconds}s, 最大: ${maxSegmentSeconds}s, 最大词数: ${maxWordsPerSegment}`)
+
   const segments: SegmentGroup[] = []
+  
+  // 🚀 修复：确保第一个字幕有有效文本
+  let firstValidSubtitle = subtitles.find(subtitle => subtitle.text && subtitle.text.trim().length > 0)
+  if (!firstValidSubtitle) {
+    console.log('⚠️ 没有找到有效字幕文本')
+    
+    // 创建一个基于整个视频的分段
+    const totalDuration = Math.max(
+      ...subtitles.map(s => s.end),
+      options.videoDuration || 0
+    )
+    
+    if (totalDuration > 0) {
+      return [{
+        start: 0,
+        end: totalDuration,
+        text: '视频内容 (字幕无效)',
+        subtitleCount: subtitles.length
+      }]
+    }
+    
+    return []
+  }
+
   let currentSegment: SegmentGroup = {
-    start: subtitles[0].start,
-    end: subtitles[0].end,
-    text: subtitles[0].text,
+    start: firstValidSubtitle.start,
+    end: firstValidSubtitle.end,
+    text: firstValidSubtitle.text.trim(),
     subtitleCount: 1
   }
 
-  for (let i = 1; i < subtitles.length; i++) {
+  const firstValidIndex = subtitles.indexOf(firstValidSubtitle)
+  
+  for (let i = firstValidIndex + 1; i < subtitles.length; i++) {
     const subtitle = subtitles[i]
+    
+    // 跳过空字幕
+    if (!subtitle.text || subtitle.text.trim().length === 0) {
+      continue
+    }
+    
     const currentDuration = currentSegment.end - currentSegment.start
-    const currentWordCount = currentSegment.text.split(/\s+/).length
+    const currentWordCount = currentSegment.text.split(/\s+/).filter(word => word.length > 0).length
+
+    console.log(`📊 当前段落状态: ${currentDuration.toFixed(1)}s, ${currentWordCount}词, ${currentSegment.subtitleCount}条字幕`)
 
     // 检查是否应该开始新段落
     const shouldStartNewSegment = 
@@ -47,29 +113,60 @@ export function smartSegmentation(
 
     if (shouldStartNewSegment) {
       // 保存当前段落
+      console.log(`🔄 创建新段落: ${formatTime(currentSegment.start)} - ${formatTime(currentSegment.end)} (${currentDuration.toFixed(1)}s, ${currentWordCount}词)`)
       segments.push({ ...currentSegment })
       
       // 开始新段落
       currentSegment = {
         start: subtitle.start,
         end: subtitle.end,
-        text: subtitle.text,
+        text: subtitle.text.trim(),
         subtitleCount: 1
       }
     } else {
       // 继续当前段落
-      currentSegment.text += ' ' + subtitle.text
+      currentSegment.text += ' ' + subtitle.text.trim()
       currentSegment.end = subtitle.end
       currentSegment.subtitleCount += 1
     }
   }
 
-  // 添加最后一个段落
-  if (currentSegment.text.trim()) {
+  // 🚀 修复：确保总是添加最后一个段落
+  if (currentSegment.text.trim().length > 0) {
+    console.log(`🔄 添加最后段落: ${formatTime(currentSegment.start)} - ${formatTime(currentSegment.end)}`)
     segments.push(currentSegment)
   }
 
+  // 🚀 修复：如果还是没有分段，强制创建一个包含所有内容的分段
+  if (segments.length === 0 && subtitles.length > 0) {
+    console.log('⚠️ 分段结果为空，强制创建单一分段')
+    
+    const allText = subtitles
+      .filter(s => s.text && s.text.trim().length > 0)
+      .map(s => s.text.trim())
+      .join(' ')
+    
+    if (allText.length > 0) {
+      segments.push({
+        start: subtitles[0].start,
+        end: subtitles[subtitles.length - 1].end,
+        text: allText,
+        subtitleCount: subtitles.length
+      })
+    }
+  }
+
+  console.log(`✅ 智能分段完成，创建了 ${segments.length} 个分段`)
   return segments
+}
+
+/**
+ * 格式化时间显示
+ */
+function formatTime(seconds: number): string {
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
 /**

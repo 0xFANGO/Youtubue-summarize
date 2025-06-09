@@ -1,11 +1,22 @@
 import 'dotenv/config'
-import { createQaFlow, createYouTubeSummarizerFlow, runYouTubeSummarizer } from './flow'
+import { 
+  createQaFlow, 
+  createYouTubeSummarizerFlow, 
+  runYouTubeSummarizer,
+  createVideoSummarizerFlow,
+  runVideoSummarizer 
+} from './flow'
 import { QASharedStore, YouTubeSummarizerSharedStore } from './types'
 
 // 导出主要功能
 export { 
+  // 新版多平台支持
+  runVideoSummarizer,
+  createVideoSummarizerFlow,
+  // 旧版YouTube专用（保持向后兼容）
   runYouTubeSummarizer,
   createYouTubeSummarizerFlow,
+  // QA功能
   createQaFlow 
 }
 

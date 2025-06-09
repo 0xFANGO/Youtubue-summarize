@@ -1,16 +1,21 @@
 import 'dotenv/config'
-import { runYouTubeSummarizer } from './index.js'
+import { runYouTubeSummarizer, runVideoSummarizer } from './index'
 import { getTokenStatsReport, resetTokenStats } from './utils/callLlm'
 import { detectObsidianVault, validateObsidianVault } from './utils/obsidianExporter'
+import { isPlatformSupported, getSupportedPlatforms } from './utils/platformDetector'
 
 // 帮助信息
 function showHelpMessage(): void {
   console.log(`
-🎬 Video Summary - AI-powered YouTube Video Summarizer
+🎬 Video Summary - AI-powered Multi-Platform Video Summarizer
+
+支持平台:
+  • YouTube (youtube.com, youtu.be)
+  • Bilibili (bilibili.com, b23.tv, BV号, AV号)
 
 用法:
-  video-summary <YouTube链接> [选项]
-  vs <YouTube链接> [选项]                # 简短命令
+  video-summary <视频链接> [选项]
+  vs <视频链接> [选项]                # 简短命令
 
 选项:
   --output, -o <目录>      输出目录 (默认: ./output)
@@ -18,13 +23,18 @@ function showHelpMessage(): void {
   --obsidian <路径>        导出到Obsidian仓库路径
   --obsidian-detect        自动检测Obsidian仓库
   --obsidian-template <模板> Obsidian模板类型 (standard/minimal/timeline, 默认: standard)
-  --obsidian-folder <文件夹> Obsidian文件夹名称 (默认: YouTube笔记)
+  --obsidian-folder <文件夹> Obsidian文件夹名称 (默认: 视频笔记)
   --no-token-monitor      禁用Token使用监控
   --save-token-files      保存Token统计文件到输出目录
   --token-stats           显示当前Token使用统计
   --reset-token-stats     重置Token使用统计
   --debug                 启用详细调试输出
   --help, -h              显示帮助信息
+
+调试说明:
+  --debug 启用一般调试输出，不包含字幕解析详情
+  如需查看字幕解析的详细JSON结构，请设置环境变量:
+    DEBUG_SUBTITLES=true video-summary <URL>
 
 Token监控说明:
   默认启用Token使用监控，可以帮助您:
@@ -39,10 +49,16 @@ Token监控说明:
   yarn global add video-summary
 
 示例:
+  # YouTube视频
   video-summary "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-  vs "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --output ./my-summaries --segment 3
-  video-summary "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --obsidian-detect
-  video-summary "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --obsidian /path/to/vault --obsidian-template minimal
+  vs "https://youtu.be/dQw4w9WgXcQ" --output ./my-summaries --segment 3
+  
+  # B站视频
+  video-summary "https://www.bilibili.com/video/BV1234567890"
+  video-summary "BV1234567890" --obsidian-detect
+  video-summary "https://b23.tv/abcdefg" --obsidian /path/to/vault --obsidian-template minimal
+  
+  # 其他选项
   video-summary "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --debug  # 启用详细输出
   video-summary --token-stats    # 仅查看统计信息
   video-summary --reset-token-stats    # 重置统计信息
@@ -193,14 +209,13 @@ function parseArgs(): {
   }
 }
 
-// 验证YouTube URL
-function isValidYouTubeUrl(url: string): boolean {
-  const patterns = [
-    /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)/,
-    /^https?:\/\/(www\.)?youtube\.com\/embed\//,
-  ]
-  
-  return patterns.some(pattern => pattern.test(url))
+// 验证视频URL（支持多平台）
+function isValidVideoUrl(url: string): boolean {
+  try {
+    return isPlatformSupported(url)
+  } catch {
+    return false
+  }
 }
 
 // 主函数
@@ -223,8 +238,9 @@ async function main(): Promise<void> {
 
   // 设置调试模式
   if (enableDebug) {
-    process.env.DEBUG_SUBTITLES = 'true'
     console.log('🐛 已启用详细调试模式')
+    // 注意：字幕详细调试需要单独的 DEBUG_SUBTITLES 环境变量
+    // 如需查看字幕解析详情，请设置: DEBUG_SUBTITLES=true
   }
 
   if (showHelp) {
@@ -269,17 +285,29 @@ async function main(): Promise<void> {
   }
 
   if (!url) {
-    console.error('❌ 请提供YouTube视频链接')
+    console.error('❌ 请提供视频链接')
     showHelpMessage()
     process.exit(1)
   }
 
-  if (!isValidYouTubeUrl(url)) {
-    console.error('❌ 请提供有效的YouTube视频链接')
-    console.error('支持的格式:')
-    console.error('  - https://www.youtube.com/watch?v=VIDEO_ID')
-    console.error('  - https://youtu.be/VIDEO_ID')
-    console.error('  - https://www.youtube.com/embed/VIDEO_ID')
+  if (!isValidVideoUrl(url)) {
+    console.error('❌ 请提供有效的视频链接')
+    console.error('支持的平台:')
+    const platforms = getSupportedPlatforms()
+    platforms.forEach(platform => {
+      if (platform === 'youtube') {
+        console.error('  YouTube:')
+        console.error('    - https://www.youtube.com/watch?v=VIDEO_ID')
+        console.error('    - https://youtu.be/VIDEO_ID')
+        console.error('    - https://www.youtube.com/embed/VIDEO_ID')
+      } else if (platform === 'bilibili') {
+        console.error('  Bilibili:')
+        console.error('    - https://www.bilibili.com/video/BV...')
+        console.error('    - https://b23.tv/...')
+        console.error('    - BV号直接输入')
+        console.error('    - AV号直接输入')
+      }
+    })
     process.exit(1)
   }
 
@@ -291,13 +319,13 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  console.log('🎬 Video Summary - AI YouTube Summarizer')
+  console.log('🎬 Video Summary - AI Multi-Platform Video Summarizer')
   console.log(`📹 视频链接: ${url}`)
   if (outputDir) console.log(`📂 输出目录: ${outputDir}`)
   if (segmentMinutes) console.log(`⏱️  段落时长: ${segmentMinutes}分钟`)
   if (obsidianPath) {
     console.log(`📝 Obsidian导出: ${obsidianPath}`)
-    console.log(`📁 Obsidian文件夹: ${obsidianFolder || 'YouTube笔记'}`)
+    console.log(`📁 Obsidian文件夹: ${obsidianFolder || '视频笔记'}`)
     console.log(`📋 Obsidian模板: ${obsidianTemplate}`)
   }
   console.log(`📊 Token监控: ${enableTokenMonitoring ? '已启用' : '已禁用'}`)
@@ -312,7 +340,8 @@ async function main(): Promise<void> {
   try {
     const startTime = Date.now()
     
-    const result = await runYouTubeSummarizer(url, {
+    // 使用新的多平台函数
+    const result = await runVideoSummarizer(url, {
       outputDir,
       enableTokenMonitoring,
       saveTokenFiles,

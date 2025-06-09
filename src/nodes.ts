@@ -9,16 +9,115 @@ import { exportToObsidian, ObsidianConfig } from './utils/obsidianExporter'
 import { smartSegmentation, validateSegments, SegmentGroup } from './utils/segmentation'
 import { RateLimiter, callLlmWithRetry, RATE_LIMIT_CONFIGS } from './utils/rateLimiter'
 import { YouTubeSummarizerSharedStore, ProcessedSegment, QASharedStore, OverallSummary } from './types'
+import { detectVideoPlatform } from './utils/platformDetector'
+import { getVideoData, getVideoScreenshot, generateVideoTimestampUrl } from './utils/getVideoData'
 import * as path from 'path'
 import PromptSync from 'prompt-sync'
 
 const prompt = PromptSync()
 
-// YouTube 总结器节点
+// 多平台视频总结器节点
 
+/**
+ * 平台检测节点
+ * 自动检测输入URL的视频平台并提取视频ID
+ */
+export class DetectPlatformNode extends Node<YouTubeSummarizerSharedStore> {
+  async prep(shared: YouTubeSummarizerSharedStore): Promise<string> {
+    return shared.inputUrl
+  }
+
+  async exec(inputUrl: string): Promise<{ platform: string; videoId: string; originalUrl: string }> {
+    console.log(`正在检测视频平台: ${inputUrl}`)
+    const platformInfo = detectVideoPlatform(inputUrl)
+    console.log(`✅ 检测到平台: ${platformInfo.platform}, 视频ID: ${platformInfo.videoId}`)
+    return platformInfo
+  }
+
+  async post(
+    shared: YouTubeSummarizerSharedStore,
+    _: string,
+    execRes: { platform: string; videoId: string; originalUrl: string }
+  ): Promise<string | undefined> {
+    // 写入平台信息到共享存储
+    shared.platform = execRes.platform as any
+    shared.videoId = execRes.videoId
+    console.log(`平台检测完成: ${execRes.platform}`)
+    return 'default'
+  }
+}
+
+/**
+ * 获取视频数据节点
+ * 根据平台获取视频字幕和基本信息
+ */
+export class FetchVideoDataNode extends Node<YouTubeSummarizerSharedStore> {
+  async prep(shared: YouTubeSummarizerSharedStore): Promise<{
+    platform: string;
+    videoId: string;
+    originalUrl: string;
+  }> {
+    if (!shared.platform || !shared.videoId) {
+      throw new Error('平台信息不完整，请先运行平台检测节点')
+    }
+    
+    return {
+      platform: shared.platform,
+      videoId: shared.videoId,
+      originalUrl: shared.inputUrl
+    }
+  }
+
+  async exec(platformInfo: {
+    platform: string;
+    videoId: string;
+    originalUrl: string;
+  }): Promise<{ title: string; duration: number; subtitles: any[]; metadata: any }> {
+    console.log(`正在获取${platformInfo.platform}视频数据: ${platformInfo.videoId}`)
+    
+    const videoData = await getVideoData({
+      platform: platformInfo.platform as any,
+      videoId: platformInfo.videoId,
+      originalUrl: platformInfo.originalUrl
+    })
+    
+    console.log(`成功获取视频数据，标题: ${videoData.title}`)
+    return videoData
+  }
+
+  async post(
+    shared: YouTubeSummarizerSharedStore,
+    _: any,
+    execRes: { title: string; duration: number; subtitles: any[]; metadata: any }
+  ): Promise<string | undefined> {
+    // 写入视频信息到共享存储
+    shared.videoTitle = execRes.title
+    shared.subtitles = execRes.subtitles
+    shared.totalDuration = execRes.duration
+    shared.platformMetadata = execRes.metadata
+
+    // 创建输出目录结构，使用视频标题作为主题命名
+    const outputStructure = await createOutputStructure(
+      shared.outputDir || './output',
+      execRes.title,
+      shared.videoId || 'unknown'
+    )
+    shared.outputDir = outputStructure.outputDir
+    shared.markdownPath = outputStructure.markdownPath
+
+    console.log(`输出目录已创建: ${shared.outputDir}`)
+    console.log(`视频总时长: ${Math.floor(execRes.duration / 60)}分${Math.floor(execRes.duration % 60)}秒`)
+    return 'default'
+  }
+}
+
+// 保留原有的FetchSubtitlesNode以保持向后兼容性（标记为已废弃）
+/**
+ * @deprecated 请使用 DetectPlatformNode + FetchVideoDataNode 代替
+ */
 export class FetchSubtitlesNode extends Node<YouTubeSummarizerSharedStore> {
   async prep(shared: YouTubeSummarizerSharedStore): Promise<string> {
-    return shared.youtubeUrl
+    return shared.inputUrl  // 修复：使用inputUrl而不是youtubeUrl
   }
 
   async exec(youtubeUrl: string): Promise<{ title: string; videoId: string; subtitles: any[]; duration?: number }> {
@@ -98,14 +197,17 @@ export class ProcessSegmentsControlledParallelNode extends Node<YouTubeSummarize
     const subtitles = shared.subtitles || []
     const minSegmentMinutes = shared.segmentMinutesMin || 4  // 增加最小时长到4分钟
     const maxSegmentMinutes = shared.segmentMinutesMax || 15  // 增加最大时长到15分钟
+    const videoDuration = shared.totalDuration || 0  // 获取视频总时长
 
+    console.log(`长: ${Math.floor(videoDuration / 60)}分${Math.floor(videoDuration % 60)}秒`)
     console.log(`开始智能分段，最小时长: ${minSegmentMinutes}分钟，最大时长: ${maxSegmentMinutes}分钟`)
 
-    // 使用智能分段算法，增加每段最大词数以减少段落数量
+    // 🚀 修复：传入视频时长参数到分段函数
     const segments = smartSegmentation(subtitles, {
       minSegmentMinutes,
       maxSegmentMinutes,
-      maxWordsPerSegment: 2000  // 增加到2000词
+      maxWordsPerSegment: 2000,  // 增加到2000词
+      videoDuration: videoDuration  // 传入视频时长
     })
 
     // 验证分段结果
@@ -125,6 +227,17 @@ export class ProcessSegmentsControlledParallelNode extends Node<YouTubeSummarize
 
   async exec(segments: SegmentGroup[]): Promise<ProcessedSegment[]> {
     console.log(`开始分批并行处理 ${segments.length} 个段落 (每批 ${this.batchSize} 个)`)
+    
+    // 🚀 修复：如果没有分段，返回空结果但不报错
+    if (segments.length === 0) {
+      console.log('⚠️ 没有分段可处理，可能是因为:')
+      console.log('   1. 视频没有字幕')
+      console.log('   2. 字幕获取失败')
+      console.log('   3. 分段算法出现问题')
+      console.log('💡 建议: 检查视频是否有可用字幕或尝试手动添加字幕')
+      return []
+    }
+    
     const results: ProcessedSegment[] = []
     
     // 分批处理
@@ -141,11 +254,21 @@ export class ProcessSegmentsControlledParallelNode extends Node<YouTubeSummarize
           const globalIndex = i + batchIndex + 1
           console.log(`  处理段落 ${globalIndex}/${segments.length}: ${formatTimestamp(segment.start)} - ${formatTimestamp(segment.end)}`)
           
-          // 使用速率限制器调用LLM，改用更便宜的gpt-4o-mini模型
-          const detailedSummary = await this.rateLimiter.execute(() =>
-            callLlmWithRetry(
-              (prompt) => callLlm(prompt, 'gpt-4o-mini'), // 使用更便宜的模型
-              `请用中文对以下视频片段进行详细总结，要求：
+          // 🚀 修复：处理无字幕的分段
+          let summaryPrompt: string
+          if (segment.subtitleCount === 0 || segment.text.includes('(无字幕)')) {
+            // 无字幕的分段，生成基于时间的描述
+            summaryPrompt = `这是一个视频片段，时间为 ${formatTimestamp(segment.start)} 到 ${formatTimestamp(segment.end)}，但没有可用的字幕内容。
+
+请生成一个简短的总结，说明：
+1. 这是视频的第 ${globalIndex} 个片段
+2. 时间段为 ${Math.floor((segment.end - segment.start)/60)} 分 ${Math.floor((segment.end - segment.start)%60)} 秒
+3. 建议观众查看原视频了解具体内容
+
+请用中文回复，控制在100字以内：`
+          } else {
+            // 有字幕的分段，正常处理
+            summaryPrompt = `请用中文对以下视频片段进行详细总结，要求：
 
 1. 总结要详细而完整，突出这一段的核心内容和要点
 2. 使用清晰易懂的中文表达
@@ -158,6 +281,13 @@ export class ProcessSegmentsControlledParallelNode extends Node<YouTubeSummarize
 ${segment.text}
 
 请直接返回详细总结，不要包含其他格式或说明：`
+          }
+          
+          // 使用速率限制器调用LLM，改用更便宜的gpt-4o-mini模型
+          const detailedSummary = await this.rateLimiter.execute(() =>
+            callLlmWithRetry(
+              (prompt) => callLlm(prompt, 'gpt-4o-mini'), // 使用更便宜的模型
+              summaryPrompt
             )
           );
           
@@ -216,6 +346,91 @@ export class GenerateOverallSummaryNode extends Node<YouTubeSummarizerSharedStor
     totalDuration: number
   }): Promise<OverallSummary> {
     console.log('正在生成整体总结...')
+    
+    // 🚀 修复：处理没有分段的情况
+    if (!data.segments || data.segments.length === 0) {
+      console.log('⚠️ 没有分段内容，生成基础总结')
+      
+      const basicPrompt = `请为以下视频生成一个基本总结：
+
+视频标题：${data.videoTitle}
+视频时长：${Math.floor(data.totalDuration/60)}分${Math.floor(data.totalDuration%60)}秒
+
+注意：该视频没有可用的字幕内容，请基于标题和时长信息生成合理的总结。
+
+请按以下格式返回结果：
+
+【主要主题】
+基于视频标题推测的主要主题
+
+【关键要点】
+- 推测要点1
+- 推测要点2  
+- 推测要点3
+- 建议观看原视频获取详细内容
+- 如有需要可手动添加字幕后重新处理
+
+【完整总结】
+基于标题和时长的基础总结，说明这是一个关于某主题的${Math.floor(data.totalDuration/60)}分钟视频，建议直接观看获取完整信息
+
+【核心结论】
+由于缺少字幕内容，建议直接观看原视频或添加字幕后重新处理以获得更准确的总结
+
+请严格按照上述格式返回，不要包含其他说明或格式：`
+
+      const response = await callLlm(basicPrompt, 'gpt-4o-mini')
+      
+      // 解析响应结果
+      const lines = response.split('\n').filter(line => line.trim())
+      
+      let mainTheme = '基于标题的主题推测'
+      let keyPoints: string[] = ['建议观看原视频获取详细内容']
+      let fullSummary = `这是一个时长${Math.floor(data.totalDuration/60)}分${Math.floor(data.totalDuration%60)}秒的视频，标题为"${data.videoTitle}"。由于没有可用的字幕内容，无法提供详细总结。建议直接观看视频获取完整信息。`
+      let conclusion = '由于缺少字幕内容，建议直接观看原视频。'
+      
+      let currentSection = ''
+      let summaryLines: string[] = []
+      
+      for (const line of lines) {
+        const trimmed = line.trim()
+        
+        if (trimmed.includes('【主要主题】')) {
+          currentSection = 'theme'
+          continue
+        } else if (trimmed.includes('【关键要点】')) {
+          currentSection = 'points'
+          continue
+        } else if (trimmed.includes('【完整总结】')) {
+          currentSection = 'summary'
+          summaryLines = []
+          continue
+        } else if (trimmed.includes('【核心结论】')) {
+          currentSection = 'conclusion'
+          continue
+        }
+        
+        if (currentSection === 'theme' && trimmed.length > 0) {
+          mainTheme = trimmed
+        } else if (currentSection === 'points' && trimmed.startsWith('- ')) {
+          keyPoints.push(trimmed.substring(2))
+        } else if (currentSection === 'summary' && trimmed.length > 0) {
+          summaryLines.push(trimmed)
+        } else if (currentSection === 'conclusion' && trimmed.length > 0) {
+          conclusion = trimmed
+        }
+      }
+      
+      if (summaryLines.length > 0) {
+        fullSummary = summaryLines.join(' ')
+      }
+      
+      return {
+        mainTheme,
+        keyPoints,
+        fullSummary,
+        conclusion
+      }
+    }
     
     // 准备所有分段总结
     const allSegmentSummaries = data.segments.map((segment, index) => {
@@ -334,7 +549,8 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
   async prep(shared: YouTubeSummarizerSharedStore): Promise<{
     videoTitle: string
     videoId: string
-    youtubeUrl: string
+    inputUrl: string
+    platform: string
     segments: ProcessedSegment[]
     overallSummary: OverallSummary
     totalDuration: number
@@ -343,7 +559,8 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
     return {
       videoTitle: shared.videoTitle!,
       videoId: shared.videoId!,
-      youtubeUrl: shared.youtubeUrl,
+      inputUrl: shared.inputUrl,
+      platform: shared.platform!,
       segments: shared.segments!,
       overallSummary: shared.overallSummary!,
       totalDuration: shared.totalDuration || 0,
@@ -354,7 +571,8 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
   async exec(data: {
     videoTitle: string
     videoId: string
-    youtubeUrl: string
+    inputUrl: string
+    platform: string
     segments: ProcessedSegment[]
     overallSummary: OverallSummary
     totalDuration: number
@@ -362,11 +580,14 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
   }): Promise<string> {
     console.log('正在生成Markdown总结...')
     
+    // 生成视频链接（支持多平台）
+    const videoUrl = generateVideoTimestampUrl(data.platform, data.videoId, 0) || data.inputUrl
+    
     // 生成Markdown内容
     const markdownContent = generateVideoSummary({
       videoTitle: data.videoTitle,
       videoId: data.videoId,
-      youtubeUrl: data.youtubeUrl,
+      youtubeUrl: videoUrl, // 使用生成的视频链接
       segments: data.segments,
       overallSummary: data.overallSummary,
       totalDuration: data.totalDuration,
@@ -390,17 +611,23 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
       try {
         console.log('📝 正在导出到Obsidian...')
         
+        // 根据平台调整标签
+        const platformTag = shared.platform === 'bilibili' ? 'bilibili' : 'youtube'
+        
         const obsidianConfig: ObsidianConfig = {
           vaultPath: shared.obsidianPath,
-          folderName: shared.obsidianFolder || 'YouTube笔记',
+          folderName: shared.obsidianFolder || '视频笔记',
           templateType: shared.obsidianTemplate || 'standard',
-          tags: ['youtube', 'video-summary']
+          tags: [platformTag, 'video-summary']
         }
+
+        // 生成视频链接用于Obsidian
+        const videoUrl = generateVideoTimestampUrl(shared.platform!, shared.videoId!, 0) || shared.inputUrl
 
         const obsidianPath = await exportToObsidian({
           videoTitle: prepRes.videoTitle,
           videoId: prepRes.videoId,
-          youtubeUrl: prepRes.youtubeUrl,
+          youtubeUrl: videoUrl,
           segments: prepRes.segments,
           overallSummary: prepRes.overallSummary,
           totalDuration: prepRes.totalDuration,
@@ -415,7 +642,8 @@ export class GenerateOutputNode extends Node<YouTubeSummarizerSharedStore> {
       }
     }
 
-    console.log('✅ YouTube视频总结完成！')
+    const platformName = shared.platform === 'bilibili' ? 'B站' : 'YouTube'
+    console.log(`✅ ${platformName}视频总结完成！`)
     console.log(`📁 输出目录: ${shared.outputDir}`)
     console.log(`📄 总结文件: ${shared.markdownPath}`)
     if (shared.obsidianExportPath) {
