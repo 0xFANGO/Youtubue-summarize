@@ -71,6 +71,9 @@ async function qaExample(): Promise<void> {
 }
 
 // 如果直接运行此文件（且不是CLI），执行主函数
-if (require.main === module && !process.argv[1]?.includes('cli')) {
+// 更严格的检查：只有当文件名是index.js/index.ts且不是通过CLI调用时才执行
+if (require.main === module && 
+    (process.argv[1]?.endsWith('index.js') || process.argv[1]?.endsWith('index.ts')) &&
+    !process.argv[1]?.includes('cli')) {
   main().catch(console.error)
 }

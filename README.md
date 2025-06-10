@@ -32,7 +32,25 @@ yarn global add video-summary
 
 ### 环境配置
 
-设置 OpenAI API Key：
+#### 方式一：全局配置（推荐）
+
+使用内置的配置管理功能，一次设置，全局使用：
+
+```bash
+# 设置API密钥（推荐方式）
+vs config set-key "your-api-key-here"
+
+# 查看当前配置
+vs config show
+
+# 设置默认输出目录（可选）
+vs config set-output ~/Downloads/video-summaries
+
+# 设置默认分段时长（可选）
+vs config set-segment 8
+```
+
+#### 方式二：环境变量
 
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
@@ -43,9 +61,30 @@ export OPENAI_API_KEY="your-api-key-here"
 export OPENAI_API_KEY="your-api-key-here"
 ```
 
+> **注意**: 环境变量的优先级高于全局配置。如果两者都设置了，将使用环境变量中的API密钥。
+
 ### 使用方法
 
 安装完成后，你可以在任何目录下使用以下命令：
+
+#### 配置管理
+
+```bash
+# 🆕 一次性设置API密钥，全局使用
+vs config set-key "your-api-key-here"
+
+# 查看当前配置状态
+vs config show
+
+# 设置默认配置（可选）
+vs config set-output ~/Downloads/video-summaries  # 默认输出目录
+vs config set-segment 8                          # 默认分段时长
+
+# 重置所有配置
+vs config reset
+```
+
+#### 视频总结
 
 ```bash
 # 基本用法（已优化，成本约$0.03-0.05）
@@ -54,7 +93,7 @@ video-summary "https://www.youtube.com/watch?v=VIDEO_ID"
 # 或使用简短命令
 vs "https://www.youtube.com/watch?v=VIDEO_ID"
 
-# 自定义输出目录和分段时长
+# 自定义输出目录和分段时长（会覆盖全局配置）
 video-summary "https://www.youtube.com/watch?v=VIDEO_ID" --output ./my-summaries --segment 5
 
 # 极致省钱模式（更长分段，更低成本）
@@ -278,7 +317,16 @@ src/
 
 ## 🆕 更新日志
 
-### v0.2.0 (最新)
+### v0.3.0 (最新)
+- 🎉 **新增全局配置管理系统**
+  - ✅ 一次性设置API密钥，全局使用 (`vs config set-key`)
+  - ✅ 支持默认输出目录和分段时长配置
+  - ✅ 配置状态查看和管理 (`vs config show`)
+  - ✅ 智能优先级：环境变量 > 全局配置
+- ✅ 优化错误提示，指导用户使用配置命令
+- ✅ 改善用户体验，减少重复配置工作
+
+### v0.2.0
 - ✅ 新增 Obsidian 笔记直接导出功能
 - ✅ 新增自动检测 Obsidian 仓库功能
 - ✅ 新增三种 Obsidian 模板（标准/极简/时间轴）
@@ -314,7 +362,10 @@ MIT License - 详见 LICENSE 文件
 ### 常见问题
 
 1. **命令找不到**: 确保已全局安装且 npm 全局 bin 目录在 PATH 中
-2. **API Key 错误**: 检查环境变量 OPENAI_API_KEY 是否正确设置
+2. **API Key 错误**: 
+   - 推荐使用 `vs config set-key "your-api-key"` 设置全局配置
+   - 或检查环境变量 OPENAI_API_KEY 是否正确设置
+   - 使用 `vs config show` 查看当前配置状态
 3. **字幕获取失败**: 确认视频有可用字幕（中文或英文）
 4. **权限错误**: 确保对输出目录有写入权限
 
@@ -325,8 +376,11 @@ MIT License - 详见 LICENSE 文件
 which video-summary
 which vs
 
-# 查看版本
+# 查看版本和帮助
 video-summary --help
+
+# 🆕 检查配置状态
+vs config show
 
 # 测试Token统计
 video-summary --token-stats

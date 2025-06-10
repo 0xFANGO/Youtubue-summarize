@@ -1,4 +1,5 @@
 import { OpenAI } from 'openai'
+import { getApiKey } from './globalConfig'
 
 interface TokenUsage {
   promptTokens: number
@@ -78,10 +79,10 @@ function updateGlobalStats(model: string, usage: TokenUsage, prompt: string): vo
 }
 
 export async function callLlm(prompt: string, model: string = 'gpt-4o'): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY
+  const apiKey = getApiKey()
 
   if (!apiKey) {
-    throw new Error('OPENAI_API_KEY environment variable is not set')
+    throw new Error('OpenAI API key is not set. Please use "vs config set-key <your-api-key>" to configure it, or set the OPENAI_API_KEY environment variable.')
   }
 
   const client = new OpenAI({ apiKey })

@@ -1,6 +1,6 @@
 {
   "name": "video-summary",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "AI-powered YouTube video summarizer with transcript analysis",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

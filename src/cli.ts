@@ -3,6 +3,16 @@ import { runYouTubeSummarizer, runVideoSummarizer } from './index'
 import { getTokenStatsReport, resetTokenStats } from './utils/callLlm'
 import { detectObsidianVault, validateObsidianVault } from './utils/obsidianExporter'
 import { isPlatformSupported, getSupportedPlatforms } from './utils/platformDetector'
+import { 
+  setApiKey, 
+  removeApiKey, 
+  showConfig, 
+  setDefaultOutputDir, 
+  setDefaultSegmentMinutes, 
+  resetConfig,
+  getDefaultOutputDir,
+  getDefaultSegmentMinutes
+} from './utils/globalConfig'
 
 // 帮助信息
 function showHelpMessage(): void {
@@ -17,9 +27,17 @@ function showHelpMessage(): void {
   video-summary <视频链接> [选项]
   vs <视频链接> [选项]                # 简短命令
 
+配置管理:
+  vs config show                    显示当前配置
+  vs config set-key <API密钥>       设置OpenAI API密钥
+  vs config remove-key              移除API密钥
+  vs config set-output <目录>       设置默认输出目录
+  vs config set-segment <分钟>      设置默认分段时长
+  vs config reset                   重置所有配置
+
 选项:
-  --output, -o <目录>      输出目录 (默认: ./output)
-  --segment, -s <分钟>     每段时长分钟数 (默认: 5)
+  --output, -o <目录>      输出目录 (默认: ./output 或全局配置)
+  --segment, -s <分钟>     每段时长分钟数 (默认: 5 或全局配置)
   --obsidian <路径>        导出到Obsidian仓库路径
   --obsidian-detect        自动检测Obsidian仓库
   --obsidian-template <模板> Obsidian模板类型 (standard/minimal/timeline, 默认: standard)
@@ -58,6 +76,12 @@ Token监控说明:
   video-summary "BV1234567890" --obsidian-detect
   video-summary "https://b23.tv/abcdefg" --obsidian /path/to/vault --obsidian-template minimal
   
+  # 配置管理
+  vs config set-key "sk-1234567890abcdef"    # 设置API密钥（一次设置，全局使用）
+  vs config show                            # 查看当前配置
+  vs config set-output ~/Videos             # 设置默认输出目录
+  vs config set-segment 8                   # 设置默认分段时长
+  
   # 其他选项
   video-summary "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --debug  # 启用详细输出
   video-summary --token-stats    # 仅查看统计信息
@@ -80,11 +104,41 @@ function parseArgs(): {
   obsidianFolder?: string
   enableDebug?: boolean
   showHelp: boolean
+  configCommand?: string
+  configValue?: string
 } {
   const args = process.argv.slice(2)
   
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     return { showHelp: true }
+  }
+
+  // 处理config命令
+  if (args[0] === 'config') {
+    if (args.length < 2) {
+      return { configCommand: 'show', showHelp: false }
+    }
+    
+    const command = args[1]
+    const validCommands = ['show', 'set-key', 'remove-key', 'set-output', 'set-segment', 'reset']
+    
+    if (!validCommands.includes(command)) {
+      console.error(`❌ 无效的配置命令: ${command}`)
+      console.error(`可用命令: ${validCommands.join(', ')}`)
+      process.exit(1)
+    }
+    
+    const needsValue = ['set-key', 'set-output', 'set-segment']
+    if (needsValue.includes(command) && args.length < 3) {
+      console.error(`❌ 命令 ${command} 需要提供值`)
+      process.exit(1)
+    }
+    
+    return { 
+      configCommand: command, 
+      configValue: args[2],
+      showHelp: false 
+    }
   }
 
   // 特殊命令（不需要URL）
@@ -97,8 +151,8 @@ function parseArgs(): {
   }
 
   let url: string | undefined
-  let outputDir: string | undefined
-  let segmentMinutes: number | undefined
+  let outputDir: string | undefined = getDefaultOutputDir() // 使用全局配置默认值
+  let segmentMinutes: number | undefined = getDefaultSegmentMinutes() // 使用全局配置默认值
   let enableTokenMonitoring = true
   let saveTokenFiles = false
   let obsidianPath: string | undefined
@@ -107,8 +161,17 @@ function parseArgs(): {
   let obsidianFolder: string | undefined
   let enableDebug = false
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]
+  // 过滤掉config命令参数，避免将config误认为URL
+  const filteredArgs = args.filter((_, index) => {
+    // 如果第一个参数是config，过滤掉config和其后的子命令/值
+    if (args[0] === 'config') {
+      return false
+    }
+    return true
+  })
+
+  for (let i = 0; i < filteredArgs.length; i++) {
+    const arg = filteredArgs[i]
 
     if (arg === '--no-token-monitor') {
       enableTokenMonitoring = false
@@ -131,7 +194,7 @@ function parseArgs(): {
     }
 
     if (arg === '--obsidian') {
-      obsidianPath = args[i + 1]
+      obsidianPath = filteredArgs[i + 1]
       if (!obsidianPath) {
         console.error('❌ --obsidian 需要指定仓库路径')
         process.exit(1)
@@ -141,7 +204,7 @@ function parseArgs(): {
     }
 
     if (arg === '--obsidian-template') {
-      const template = args[i + 1] as 'standard' | 'minimal' | 'timeline'
+      const template = filteredArgs[i + 1] as 'standard' | 'minimal' | 'timeline'
       if (!['standard', 'minimal', 'timeline'].includes(template)) {
         console.error('❌ --obsidian-template 必须是: standard, minimal, timeline')
         process.exit(1)
@@ -152,7 +215,7 @@ function parseArgs(): {
     }
 
     if (arg === '--obsidian-folder') {
-      obsidianFolder = args[i + 1]
+      obsidianFolder = filteredArgs[i + 1]
       if (!obsidianFolder) {
         console.error('❌ --obsidian-folder 需要指定文件夹名称')
         process.exit(1)
@@ -162,13 +225,13 @@ function parseArgs(): {
     }
 
     if (arg === '--output' || arg === '-o') {
-      outputDir = args[i + 1]
+      outputDir = filteredArgs[i + 1]
       i++ // 跳过下一个参数（值）
       continue
     }
 
     if (arg === '--segment' || arg === '-s') {
-      segmentMinutes = parseInt(args[i + 1], 10)
+      segmentMinutes = parseInt(filteredArgs[i + 1], 10)
       if (isNaN(segmentMinutes) || segmentMinutes <= 0) {
         console.error('❌ 段落时长必须是正整数')
         process.exit(1)
@@ -233,7 +296,9 @@ async function main(): Promise<void> {
     obsidianTemplate,
     obsidianFolder,
     enableDebug,
-    showHelp 
+    showHelp,
+    configCommand,
+    configValue
   } = parseArgs()
 
   // 设置调试模式
@@ -246,6 +311,56 @@ async function main(): Promise<void> {
   if (showHelp) {
     showHelpMessage()
     return
+  }
+
+  // 处理配置命令
+  if (configCommand) {
+    try {
+      switch (configCommand) {
+        case 'show':
+          showConfig()
+          break
+        case 'set-key':
+          if (!configValue) {
+            console.error('❌ 请提供API密钥')
+            process.exit(1)
+          }
+          setApiKey(configValue)
+          break
+        case 'remove-key':
+          removeApiKey()
+          break
+        case 'set-output':
+          if (!configValue) {
+            console.error('❌ 请提供输出目录路径')
+            process.exit(1)
+          }
+          setDefaultOutputDir(configValue)
+          break
+        case 'set-segment':
+          if (!configValue) {
+            console.error('❌ 请提供分段时长（分钟）')
+            process.exit(1)
+          }
+          const minutes = parseInt(configValue, 10)
+          if (isNaN(minutes) || minutes <= 0) {
+            console.error('❌ 分段时长必须是正整数')
+            process.exit(1)
+          }
+          setDefaultSegmentMinutes(minutes)
+          break
+        case 'reset':
+          resetConfig()
+          break
+        default:
+          console.error(`❌ 未知的配置命令: ${configCommand}`)
+          process.exit(1)
+      }
+      return
+    } catch (error) {
+      console.error('❌ 配置操作失败:', error instanceof Error ? error.message : error)
+      process.exit(1)
+    }
   }
 
   // 处理特殊命令
@@ -378,8 +493,9 @@ async function main(): Promise<void> {
     
     if (error instanceof Error && error.message.includes('API key')) {
       console.error()
-      console.error('💡 提示: 请确保已设置 OPENAI_API_KEY 环境变量')
-      console.error('   例如: export OPENAI_API_KEY="your-api-key-here"')
+      console.error('💡 提示: 请使用以下方式之一设置API密钥:')
+      console.error('   1. vs config set-key "your-api-key-here"  # 推荐：全局配置')
+      console.error('   2. export OPENAI_API_KEY="your-api-key-here"  # 环境变量')
     }
     
     process.exit(1)
